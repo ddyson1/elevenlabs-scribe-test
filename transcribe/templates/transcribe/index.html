@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Speech to Text — ElevenLabs Scribe</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0a0a0a;
+      color: #e5e5e5;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+
+    .container {
+      width: 100%;
+      max-width: 680px;
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    .header { text-align: center; }
+    .header h1 { font-size: 1.75rem; font-weight: 700; }
+    .header p { color: #737373; margin-top: 0.375rem; font-size: 0.9rem; }
+
+    .controls { display: flex; align-items: center; gap: 0.75rem; }
+
+    button {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.6rem 1.25rem;
+      border-radius: 0.5rem;
+      border: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s, opacity 0.15s;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    #btn-start { background: #2563eb; color: #fff; }
+    #btn-start:hover:not(:disabled) { background: #1d4ed8; }
+
+    #btn-stop  { background: #dc2626; color: #fff; display: none; }
+    #btn-stop:hover:not(:disabled) { background: #b91c1c; }
+
+    #btn-clear {
+      background: transparent;
+      color: #737373;
+      border: 1px solid #404040;
+      display: none;
+    }
+    #btn-clear:hover:not(:disabled) { color: #e5e5e5; border-color: #737373; }
+
+    .status {
+      display: none;
+      align-items: center;
+      gap: 0.5rem;
+      font-size: 0.8rem;
+      color: #4ade80;
+    }
+    .status.visible { display: flex; }
+
+    .dot {
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #4ade80;
+      position: relative;
+    }
+    .dot::before {
+      content: '';
+      position: absolute;
+      inset: -3px;
+      border-radius: 50%;
+      background: #4ade80;
+      opacity: 0.4;
+      animation: ping 1.2s ease-in-out infinite;
+    }
+    @keyframes ping {
+      0%, 100% { transform: scale(1); opacity: 0.4; }
+      50%       { transform: scale(1.5); opacity: 0; }
+    }
+
+    .error-box {
+      display: none;
+      padding: 0.75rem 1rem;
+      background: rgba(220,38,38,0.15);
+      border: 1px solid #7f1d1d;
+      border-radius: 0.5rem;
+      color: #fca5a5;
+      font-size: 0.85rem;
+    }
+    .error-box.visible { display: block; }
+
+    .transcript-box {
+      min-height: 200px;
+      padding: 1rem 1.25rem;
+      background: #111;
+      border: 1px solid #262626;
+      border-radius: 0.75rem;
+      line-height: 1.7;
+      font-size: 0.95rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .placeholder { color: #525252; font-style: italic; }
+    .partial { color: #737373; }
+
+    .word-count {
+      font-size: 0.75rem;
+      color: #525252;
+      display: none;
+    }
+    .word-count.visible { display: block; }
+  </style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>Speech to Text</h1>
+    <p>Real-time transcription powered by ElevenLabs Scribe v2</p>
+  </div>
+
+  <div class="controls">
+    <button id="btn-start">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"
+           fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+        <line x1="12" x2="12" y1="19" y2="22"/>
+      </svg>
+      Start Recording
+    </button>
+    <button id="btn-stop">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+        <rect x="6" y="6" width="12" height="12" rx="1"/>
+      </svg>
+      Stop
+    </button>
+    <button id="btn-clear">Clear</button>
+  </div>
+
+  <div class="status" id="status">
+    <span class="dot"></span>
+    Listening&hellip;
+  </div>
+
+  <div class="error-box" id="error-box"></div>
+
+  <div class="transcript-box" id="transcript-box">
+    <span class="placeholder" id="placeholder">Click "Start Recording" to begin transcription.</span>
+  </div>
+
+  <div class="word-count" id="word-count"></div>
+</div>
+
+<script>
+  // ── State ──────────────────────────────────────────────────────────────────
+  let ws = null;
+  let audioCtx = null;
+  let stream = null;
+  let scriptProcessor = null;
+  let committed = [];
+  let partial = "";
+
+  // ── Elements ───────────────────────────────────────────────────────────────
+  const btnStart     = document.getElementById("btn-start");
+  const btnStop      = document.getElementById("btn-stop");
+  const btnClear     = document.getElementById("btn-clear");
+  const statusEl     = document.getElementById("status");
+  const errorBox     = document.getElementById("error-box");
+  const transcriptEl = document.getElementById("transcript-box");
+  const placeholder  = document.getElementById("placeholder");
+  const wordCount    = document.getElementById("word-count");
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
+  function showError(msg) {
+    errorBox.textContent = msg;
+    errorBox.classList.add("visible");
+  }
+  function hideError() {
+    errorBox.classList.remove("visible");
+  }
+
+  function renderTranscript() {
+    const full = committed.join(" ");
+    const hasContent = full || partial;
+
+    placeholder.style.display = hasContent ? "none" : "";
+
+    // Remove any previously inserted text nodes / spans
+    [...transcriptEl.childNodes].forEach(n => {
+      if (n !== placeholder) transcriptEl.removeChild(n);
+    });
+
+    if (full) {
+      transcriptEl.insertBefore(document.createTextNode(full), placeholder);
+    }
+    if (partial) {
+      if (full) transcriptEl.appendChild(document.createTextNode(" "));
+      const span = document.createElement("span");
+      span.className = "partial";
+      span.textContent = partial;
+      transcriptEl.appendChild(span);
+    }
+
+    const words = full.split(/\s+/).filter(Boolean).length;
+    if (words > 0) {
+      wordCount.textContent = `${words} word${words !== 1 ? "s" : ""}`;
+      wordCount.classList.add("visible");
+    } else {
+      wordCount.classList.remove("visible");
+    }
+  }
+
+  // Convert Float32 PCM → Int16 PCM → base64
+  function float32ToBase64(float32Array) {
+    const int16 = new Int16Array(float32Array.length);
+    for (let i = 0; i < float32Array.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32Array[i]));
+      int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+    }
+    const bytes = new Uint8Array(int16.buffer);
+    let binary = "";
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  }
+
+  // ── Main flow ──────────────────────────────────────────────────────────────
+  async function startRecording() {
+    hideError();
+    btnStart.disabled = true;
+
+    // 1. Get single-use token from our Django backend
+    let token;
+    try {
+      const res = await fetch("/api/scribe-token", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to get token");
+      token = data.token;
+    } catch (err) {
+      showError(err.message);
+      btnStart.disabled = false;
+      return;
+    }
+
+    // 2. Open WebSocket to ElevenLabs
+    const params = new URLSearchParams({
+      model_id:       "scribe_v2_realtime",
+      token:          token,
+      commit_strategy:"vad",
+    });
+    ws = new WebSocket(`wss://api.elevenlabs.io/v1/speech-to-text/realtime?${params}`);
+
+    ws.onopen = async () => {
+      // 3. Request microphone access
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (err) {
+        showError("Microphone access denied.");
+        ws.close();
+        return;
+      }
+
+      // 4. Set up AudioContext → ScriptProcessor to get raw PCM chunks
+      const SAMPLE_RATE = 16000;
+      audioCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+      const source = audioCtx.createMediaStreamSource(stream);
+      scriptProcessor = audioCtx.createScriptProcessor(4096, 1, 1);
+
+      source.connect(scriptProcessor);
+      scriptProcessor.connect(audioCtx.destination);
+
+      scriptProcessor.onaudioprocess = (e) => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          const pcmData = e.inputBuffer.getChannelData(0);
+          ws.send(JSON.stringify({
+            message_type:  "input_audio_chunk",
+            audio_base_64: float32ToBase64(pcmData),
+          }));
+        }
+      };
+
+      btnStart.style.display = "none";
+      btnStop.style.display  = "";
+      statusEl.classList.add("visible");
+    };
+
+    ws.onmessage = (event) => {
+      let msg;
+      try { msg = JSON.parse(event.data); } catch { return; }
+
+      if (msg.message_type === "partial_transcript") {
+        partial = msg.text || "";
+        renderTranscript();
+      } else if (msg.message_type === "committed_transcript") {
+        if (msg.text && msg.text.trim()) {
+          committed.push(msg.text.trim());
+        }
+        partial = "";
+        renderTranscript();
+      } else if (msg.message_type === "session_started") {
+        console.log("Scribe session started:", msg.session_id);
+      } else if (msg.error) {
+        showError(msg.error);
+      }
+    };
+
+    ws.onerror = () => showError("WebSocket error. Check your API key and connection.");
+
+    ws.onclose = () => {
+      cleanup();
+      btnStart.style.display  = "";
+      btnStart.disabled = false;
+      btnStop.style.display   = "none";
+      statusEl.classList.remove("visible");
+      btnClear.style.display  = committed.length > 0 ? "" : "none";
+    };
+  }
+
+  function stopRecording() {
+    if (ws) ws.close();
+    cleanup();
+  }
+
+  function cleanup() {
+    if (scriptProcessor) { scriptProcessor.disconnect(); scriptProcessor = null; }
+    if (audioCtx) { audioCtx.close(); audioCtx = null; }
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    partial = "";
+    renderTranscript();
+  }
+
+  // ── Button handlers ────────────────────────────────────────────────────────
+  btnStart.addEventListener("click", startRecording);
+  btnStop.addEventListener("click",  stopRecording);
+  btnClear.addEventListener("click", () => {
+    committed = [];
+    partial = "";
+    renderTranscript();
+    btnClear.style.display = "none";
+  });
+</script>
+</body>
+</html>
