@@ -20,13 +20,11 @@ def scribe_token(request):
     if not api_key:
         return JsonResponse({"error": "ELEVENLABS_API_KEY is not configured"}, status=500)
 
-    payload = json.dumps({"model_id": "scribe_v2_realtime", "ttl_secs": 300}).encode()
     req = urllib.request.Request(
-        "https://api.elevenlabs.io/v1/speech-to-text/get-realtime-token",
-        data=payload,
+        "https://api.elevenlabs.io/v1/single-use-token/realtime_scribe",
+        data=b"",
         headers={
             "xi-api-key": api_key,
-            "Content-Type": "application/json",
         },
         method="POST",
     )
